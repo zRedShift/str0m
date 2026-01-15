@@ -1112,22 +1112,6 @@ impl IceAgent {
 
         self.evaluate_nomination();
 
-        // For ice-lite mode, we need to initialize the remote binding request time
-        // BEFORE pruning. This ensures candidate pairs aren't immediately pruned
-        // on the first handle_timeout() call when no binding requests have been
-        // received yet.
-        if self.ice_lite {
-            // Remote binding request time is the timestamp in the CandidatePair that
-            // is used to decide whether something is timed out or not. We need all
-            // pairs to have this time set, so that pairs that don't receive any
-            // STUN binding requests eventually times out.
-            for p in &mut self.candidate_pairs {
-                if p.remote_binding_request_time().is_none() {
-                    p.increase_remote_binding_requests(now);
-                }
-            }
-        }
-
         // prune failed candidates.
         let mut any_pruned = false;
         self.candidate_pairs.retain(|p| {
@@ -1153,6 +1137,16 @@ impl IceAgent {
         }
 
         if self.ice_lite {
+            // Remote binding request time is the timestamp in the CandidatePair that
+            // is used to decide whether something is timed out or not. We need all
+            // pairs to have this time set, so that pairs that don't receive any
+            // STUN binding requests eventually times out.
+            for p in &mut self.candidate_pairs {
+                if p.remote_binding_request_time().is_none() {
+                    p.increase_remote_binding_requests(now);
+                }
+            }
+
             trace!("Stop timeout since ice-lite do no checks");
             return;
         }
