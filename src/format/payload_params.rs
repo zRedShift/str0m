@@ -783,14 +783,21 @@ mod test {
                     expected: Some(PayloadParams::EXACT_MATCH_SCORE - 8),
                     msg: "Same profile (Baseline), offered level 1B < configured 3.1 should match",
                 },
-                // Test 8: Baseline (not CB) offered lower level > should match with (special Level1B case)
+                // Test 8: libwebrtc constrained-high profile used by mobile/iOS H.264
+                Case {
+                    c0: h264_codec_spec(None, Some(1), Some(0x640c34)), // ConstrainedHigh L5.2
+                    c1: h264_codec_spec(None, Some(1), Some(0x640c34)), // ConstrainedHigh L5.2
+                    expected: Some(PayloadParams::EXACT_MATCH_SCORE),
+                    msg: "Same profile (ConstrainedHigh), same level should match",
+                },
+                // Test 9: Baseline (not CB) offered lower level > should match with (special Level1B case)
                 Case {
                     c0: h264_codec_spec(None, None, Some(0x420000)), // Baseline Level1B
                     c1: h264_codec_spec(None, None, Some(0x42000a)), // Baseline L1
                     expected: Some(PayloadParams::EXACT_MATCH_SCORE - 1),
                     msg: "Same profile (Baseline), offered level 1 < configured 1B should match",
                 },
-                // Test 9: Baseline (not CB) offered higher level -> should not match (special Level1B case)
+                // Test 10: Baseline (not CB) offered higher level -> should not match (special Level1B case)
                 Case {
                     c0: h264_codec_spec(None, None, Some(0x42000a)), // Baseline L1
                     c1: h264_codec_spec(None, None, Some(0x420000)), // Baseline Level1B
