@@ -70,6 +70,11 @@ impl H264ProfileLevel {
             BitPattern::new(*b"00000000"),
         ),
         (
+            H264Profile::ConstrainedHigh,
+            H264ProfileIdc::X64,
+            BitPattern::new(*b"00001100"),
+        ),
+        (
             H264Profile::High10,
             H264ProfileIdc::X6E,
             BitPattern::new(*b"00000000"),
@@ -179,6 +184,7 @@ pub(crate) enum H264Profile {
     ConstrainedBaseline,
     Main,
     Extended,
+    ConstrainedHigh,
     High,
     High10,
     High422,
