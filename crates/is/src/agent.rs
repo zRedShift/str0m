@@ -2515,8 +2515,9 @@ mod test {
                 true,
             );
             let bytes = serialize_stun_msg(request, &agent.local_credentials.pass);
+            let now = Instant::now();
             assert!(agent.handle_packet(
-                Instant::now(),
+                now,
                 StunPacket {
                     message: StunMessage::parse(&bytes).unwrap(),
                     source,
@@ -2524,6 +2525,7 @@ mod test {
                     proto: Protocol::Udp,
                 },
             ));
+            agent.handle_timeout(now);
             assert_eq!(agent.candidate_pairs.len(), 2);
             assert_eq!(agent.pair_counter, initial.wrapping_add(2));
             let nominated = agent.nominated_pair().unwrap();
