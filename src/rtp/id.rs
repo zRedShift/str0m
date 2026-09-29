@@ -10,10 +10,12 @@ use str0m_proto::NonCryptographicRng;
 macro_rules! str_id {
     ($id:ident, $name:literal, $num:tt, $new_len:tt) => {
         impl $id {
+            const RANDOM_LEN: usize = $new_len;
+
             /// Creates a new random id.
             pub fn new() -> $id {
                 let mut arr = Id::<$num>::random().into_array();
-                for i in $new_len..$num {
+                for i in Self::RANDOM_LEN..$num {
                     arr[i] = b' ';
                 }
                 $id(arr)
@@ -125,6 +127,30 @@ macro_rules! num_id {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Mid([u8; 16]);
 str_id!(Mid, "Mid", 16, 3);
+
+impl Mid {
+    const BASE62: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    pub(crate) fn random_counter_start() -> u64 {
+        NonCryptographicRng::u64() % (Self::BASE62.len() as u64).pow(Self::RANDOM_LEN as u32)
+    }
+
+    pub(crate) fn from_counter(mut value: u64) -> Self {
+        let mut mid = Self::from_array(Default::default());
+        mid.0.fill(b' ');
+        let mut len = 0;
+        loop {
+            mid.0[len] = Self::BASE62[(value % Self::BASE62.len() as u64) as usize];
+            len += 1;
+            value /= Self::BASE62.len() as u64;
+            if value == 0 {
+                break;
+            }
+        }
+        mid.0[..len].reverse();
+        mid
+    }
+}
 
 /// Identifier of a simulcast layer for an encoded stream.
 ///
@@ -370,5 +396,43 @@ impl MidRid {
 
     pub fn special_equals(&self, other: &MidRid) -> bool {
         self.0 == other.0 && (self.1.is_none() || self.1 == other.1)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn mid_counter_encoding() {
+        for (value, expected) in [
+            (0, "0"),
+            (9, "9"),
+            (10, "a"),
+            (35, "z"),
+            (36, "A"),
+            (61, "Z"),
+            (62, "10"),
+            (62_u64.pow(3) - 1, "ZZZ"),
+            (62_u64.pow(3), "1000"),
+            (u64::MAX, "lYGhA16ahyf"),
+        ] {
+            let mid = Mid::from_counter(value);
+            assert_eq!(&*mid, expected);
+            assert_eq!(&mid.0[..expected.len()], expected.as_bytes());
+            assert!(mid.0[expected.len()..].iter().all(|b| *b == b' '));
+        }
+    }
+
+    #[test]
+    fn mid_counter_start_preserves_seeded_range() {
+        for seed in [0, 1, 42, 43, u64::MAX] {
+            fastrand::seed(seed);
+            let expected = NonCryptographicRng::u64() % 62_u64.pow(3);
+            fastrand::seed(seed);
+            let actual = Mid::random_counter_start();
+            assert_eq!(actual, expected);
+            assert!(Mid::from_counter(actual).len() <= Mid::RANDOM_LEN);
+        }
     }
 }
