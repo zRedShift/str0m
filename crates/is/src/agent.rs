@@ -77,6 +77,7 @@ pub struct IceAgent {
 
     /// The candidate pairs.
     candidate_pairs: Vec<CandidatePair>,
+    pair_counter: u64,
 
     /// Transmit packet ready to be polled by poll_transmit.
     transmit: VecDeque<Transmit>,
@@ -323,6 +324,7 @@ impl IceAgent {
         local_credentials: IceCreds,
         sha1_hmac_provider: &'static dyn Sha1HmacProvider,
     ) -> Self {
+        let control_tie_breaker = NonCryptographicRng::u64();
         IceAgent {
             last_now: None,
             ice_lite: false,
@@ -331,11 +333,12 @@ impl IceAgent {
             local_credentials,
             remote_credentials: None,
             controlling: false,
-            control_tie_breaker: NonCryptographicRng::u64(),
+            control_tie_breaker,
             state: IceConnectionState::New,
             local_candidates: vec![],
             remote_candidates: vec![],
             candidate_pairs: vec![],
+            pair_counter: control_tie_breaker,
             transmit: VecDeque::new(),
             events: VecDeque::new(),
             stun_server_queue: VecDeque::new(),
@@ -843,8 +846,14 @@ impl IceAgent {
 
                 let prio =
                     CandidatePair::calculate_prio(self.controlling, remote.prio(), local.prio());
-                let mut pair =
-                    CandidatePair::new(*local_idx, local.kind(), *remote_idx, remote.kind(), prio);
+                let mut pair = CandidatePair::new(
+                    PairId::next(&mut self.pair_counter),
+                    *local_idx,
+                    local.kind(),
+                    *remote_idx,
+                    remote.kind(),
+                    prio,
+                );
 
                 trace!("Form pair local: {:?} remote: {:?}", local, remote);
 
@@ -1579,7 +1588,14 @@ impl IceAgent {
             // *  Its state is set to Waiting. (this is the default)
             // *  The pair is inserted into the checklist based on its priority.
             // *  The pair is enqueued into the triggered-check queue.
-            let pair = CandidatePair::new(local_idx, local.kind(), remote_idx, remote.kind(), prio);
+            let pair = CandidatePair::new(
+                PairId::next(&mut self.pair_counter),
+                local_idx,
+                local.kind(),
+                remote_idx,
+                remote.kind(),
+                prio,
+            );
 
             debug!("Created new pair for STUN request: {:?}", Pii(&pair));
 
@@ -2440,6 +2456,86 @@ mod test {
             agent.pair_indexes(),
             [(0, 1), (0, 0), (1, 1), (1, 0), (2, 2)]
         );
+    }
+
+    #[test]
+    fn pair_ids_survive_recreation_and_restart() {
+        let mut agent = new_test_agent();
+        let initial = agent.pair_counter;
+        let local = Candidate::host(ipv4_1(), "udp").unwrap();
+        let remote = Candidate::host(ipv4_3(), "udp").unwrap();
+        agent.add_local_candidate(local).unwrap();
+        agent.add_remote_candidate(remote.clone());
+        assert_eq!(agent.candidate_pairs.len(), 1);
+        let original = agent.candidate_pairs[0].id();
+        assert_eq!(agent.pair_counter, initial.wrapping_add(1));
+
+        agent.recreate_candidate_pairs();
+        assert_eq!(agent.candidate_pairs.len(), 1);
+        let recreated = agent.candidate_pairs[0].id();
+        assert_ne!(recreated, original);
+        assert_eq!(agent.pair_counter, initial.wrapping_add(2));
+
+        agent.ice_restart(IceCreds::new(), true);
+        assert!(agent.candidate_pairs.is_empty());
+        assert_eq!(agent.pair_counter, initial.wrapping_add(2));
+        agent.add_remote_candidate(remote);
+        assert_eq!(agent.candidate_pairs.len(), 1);
+        let restarted = agent.candidate_pairs[0].id();
+        assert_ne!(restarted, original);
+        assert_ne!(restarted, recreated);
+        assert_eq!(agent.pair_counter, initial.wrapping_add(3));
+        assert_eq!(agent.control_tie_breaker, initial);
+    }
+
+    #[test]
+    fn peer_reflexive_pair_ids_share_the_agent_counter() {
+        let mut agent = new_test_agent();
+        agent.set_ice_lite(true);
+        agent.set_controlling(false);
+        let initial = agent.pair_counter;
+        agent
+            .add_local_candidate(Candidate::host(ipv4_1(), "udp").unwrap())
+            .unwrap();
+        let remote_creds = IceCreds::new();
+        agent.set_remote_credentials(remote_creds.clone());
+        let remote = Candidate::host(ipv4_3(), "udp").unwrap();
+        let priority = remote.prio();
+        agent.add_remote_candidate(remote);
+        let original = agent.candidate_pairs[0].id();
+
+        for source in [ipv4_4(), ipv4_3()] {
+            let username = format!("{}:{}", agent.local_credentials.ufrag, remote_creds.ufrag);
+            let request =
+                StunMessage::binding_request(&username, TransId::new(), true, 0, priority - 1, true);
+            let bytes = serialize_stun_msg(request, &agent.local_credentials.pass);
+            assert!(agent.handle_packet(
+                Instant::now(),
+                StunPacket {
+                    message: StunMessage::parse(&bytes).unwrap(),
+                    source,
+                    destination: ipv4_1(),
+                    proto: Protocol::Udp,
+                },
+            ));
+            assert_eq!(agent.candidate_pairs.len(), 2);
+            assert_eq!(agent.pair_counter, initial.wrapping_add(2));
+            let nominated = agent.nominated_pair().unwrap();
+            assert_eq!(
+                nominated.remote_candidate(&agent.remote_candidates).addr(),
+                source
+            );
+            if source == ipv4_4() {
+                assert_ne!(nominated.id(), original);
+            } else {
+                assert_eq!(nominated.id(), original);
+            }
+            assert!(agent.events.iter().any(|event| matches!(
+                event,
+                IceAgentEvent::NominatedSend { destination, .. } if *destination == source
+            )));
+        }
+        assert_eq!(agent.control_tie_breaker, initial);
     }
 
     #[test]

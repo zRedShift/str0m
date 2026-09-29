@@ -139,8 +139,15 @@ impl Default for PairId {
     }
 }
 
+impl PairId {
+    pub fn next(counter: &mut u64) -> Self {
+        PairId(Id::next(counter).into_array())
+    }
+}
+
 impl CandidatePair {
     pub fn new(
+        id: PairId,
         local_idx: usize,
         local_kind: CandidateKind,
         remote_idx: usize,
@@ -154,7 +161,7 @@ impl CandidatePair {
             remote_kind,
             prio,
             binding_attempts: VecDeque::with_capacity(DEFAULT_MAX_RETRANSMITS * 2),
-            id: Default::default(),
+            id,
             valid_idx: Default::default(),
             state: Default::default(),
             cached_next_attempt_time: Default::default(),
@@ -589,7 +596,14 @@ mod tests {
     fn ice_timeout_after_established() {
         let stun_timing = StunTiming::default();
 
-        let mut pair = CandidatePair::new(0, CandidateKind::Host, 0, CandidateKind::Host, 0);
+        let mut pair = CandidatePair::new(
+            PairId::default(),
+            0,
+            CandidateKind::Host,
+            0,
+            CandidateKind::Host,
+            0,
+        );
 
         let mut now = Instant::now();
 
@@ -616,7 +630,14 @@ mod tests {
     #[test]
     fn last_successful_rtt_returns_most_recent() {
         let stun_timing = StunTiming::default();
-        let mut pair = CandidatePair::new(0, CandidateKind::Host, 0, CandidateKind::Host, 0);
+        let mut pair = CandidatePair::new(
+            PairId::default(),
+            0,
+            CandidateKind::Host,
+            0,
+            CandidateKind::Host,
+            0,
+        );
         let now = Instant::now();
 
         assert_eq!(pair.last_successful_rtt(), None);

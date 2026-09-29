@@ -1529,8 +1529,7 @@ impl Rtc {
     /// Creates a new MID, including across pending offers.
     pub(crate) fn new_mid(&mut self) -> Mid {
         loop {
-            let mid = Mid::from_counter(self.mid_counter);
-            self.mid_counter = self.mid_counter.wrapping_add(1);
+            let mid = Mid::next(&mut self.mid_counter);
             if !self.session.has_mid(mid) && self.session.app().is_none_or(|(app, _)| app != mid) {
                 break mid;
             }
