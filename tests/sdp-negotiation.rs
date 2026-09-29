@@ -10,6 +10,7 @@ use common::progress;
 use common::{extract_sctp_init, remove_sctp_init, replace_sctp_init};
 use str0m::Rtc;
 use str0m::change::SdpOffer;
+use str0m::change::SdpPendingOffer;
 use str0m::format::Codec;
 use str0m::format::CodecSpec;
 use str0m::format::FormatParams;
@@ -1414,6 +1415,231 @@ fn snap_sdp_renegotiation_reverse_direction_changed_sctp_init_rejected() -> Resu
     );
 
     Ok(())
+}
+
+fn mid_pair() -> (Rtc, Rtc) {
+    init_crypto_default();
+    let now = Instant::now();
+    fastrand::seed(MID_SEED);
+    let l = Rtc::new(now);
+    fastrand::seed(MID_SEED);
+    let r = Rtc::new(now);
+    (l, r)
+}
+
+fn offer_mids(sdp: &str) -> Vec<String> {
+    sdp.lines()
+        .filter_map(|line| line.strip_prefix("a=mid:"))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn negotiate_unique_mids(
+    l: &mut Rtc,
+    r: &mut Rtc,
+    offer: SdpOffer,
+    pending: SdpPendingOffer,
+) -> Vec<String> {
+    let mids = offer_mids(&offer.to_sdp_string());
+    let answer = r.sdp_api().accept_offer(offer).unwrap();
+    assert_eq!(offer_mids(&answer.to_sdp_string()), mids);
+    let result = l.sdp_api().accept_answer(pending, answer);
+    assert!(
+        mids.iter()
+            .enumerate()
+            .all(|(i, mid)| !mids[..i].contains(mid)),
+        "duplicate MIDs: {mids:?}"
+    );
+    result.unwrap();
+    mids
+}
+
+// Reset the RNG before each allocation to repeat its first candidate.
+const MID_SEED: u64 = 42;
+
+#[test]
+pub fn pending_audio_and_application_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    fastrand::seed(MID_SEED);
+    change.add_channel("control".into());
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut l, &mut r, offer, pending).len(),
+        2
+    );
+}
+
+#[test]
+pub fn pending_application_and_audio_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_channel("control".into());
+    fastrand::seed(MID_SEED);
+    change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut l, &mut r, offer, pending).len(),
+        2
+    );
+}
+
+#[test]
+pub fn pending_audio_and_video_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    let audio = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    fastrand::seed(MID_SEED);
+    let video = change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+    let (offer, pending) = change.apply().unwrap();
+    negotiate_unique_mids(&mut l, &mut r, offer, pending);
+    assert_ne!(audio, video);
+}
+
+#[test]
+pub fn installed_audio_and_new_application_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (offer, pending) = change.apply().unwrap();
+    negotiate_unique_mids(&mut l, &mut r, offer, pending);
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_channel("control".into());
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut l, &mut r, offer, pending).len(),
+        2
+    );
+}
+
+#[test]
+pub fn installed_application_and_new_audio_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_channel("control".into());
+    let (offer, pending) = change.apply().unwrap();
+    negotiate_unique_mids(&mut l, &mut r, offer, pending);
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut l, &mut r, offer, pending).len(),
+        2
+    );
+}
+
+#[test]
+pub fn remote_audio_and_local_application_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (offer, pending) = change.apply().unwrap();
+    negotiate_unique_mids(&mut l, &mut r, offer, pending);
+
+    let mut change = r.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_channel("control".into());
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut r, &mut l, offer, pending).len(),
+        2
+    );
+}
+
+#[test]
+pub fn remote_application_and_local_audio_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_channel("control".into());
+    let (offer, pending) = change.apply().unwrap();
+    negotiate_unique_mids(&mut l, &mut r, offer, pending);
+
+    let mut change = r.sdp_api();
+    fastrand::seed(MID_SEED);
+    change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut r, &mut l, offer, pending).len(),
+        2
+    );
+}
+
+#[test]
+pub fn new_channel_reuses_application_mid() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    let first = change.add_channel("first".into());
+    let (offer, pending) = change.apply().unwrap();
+    let initial = negotiate_unique_mids(&mut l, &mut r, offer, pending);
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    let second = change.add_channel("second".into());
+    assert_ne!(first, second);
+    assert!(change.apply().is_none());
+    let mut change = l.sdp_api();
+    change.ice_restart(true);
+    let (offer, pending) = change.apply().unwrap();
+    assert_eq!(
+        negotiate_unique_mids(&mut l, &mut r, offer, pending),
+        initial
+    );
+}
+
+#[test]
+pub fn merged_pending_offers_have_distinct_mids() {
+    let (mut l, mut r) = mid_pair();
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    let audio = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (original, pending) = change.apply().unwrap();
+    let original_mids = offer_mids(&original.to_sdp_string());
+
+    let mut change = l.sdp_api();
+    fastrand::seed(MID_SEED);
+    let video = change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+    change.merge(pending);
+    let (offer, pending) = change.apply().unwrap();
+    let merged = negotiate_unique_mids(&mut l, &mut r, offer, pending);
+    assert_eq!(&merged[..original_mids.len()], original_mids);
+    assert_ne!(audio, video);
+}
+
+#[test]
+pub fn merged_pending_offer_preserves_media_after_glare() {
+    init_crypto_default();
+    let now = Instant::now();
+    fastrand::seed(42);
+    let mut l = Rtc::new(now);
+    fastrand::seed(43);
+    let mut r = Rtc::new(now);
+
+    let mut change = l.sdp_api();
+    let audio = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    let (_, pending) = change.apply().unwrap();
+
+    let mut change = r.sdp_api();
+    let video = change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+    let (offer, remote_pending) = change.apply().unwrap();
+    let answer = l.sdp_api().accept_offer(offer).unwrap();
+    r.sdp_api().accept_answer(remote_pending, answer).unwrap();
+
+    let mut change = l.sdp_api();
+    change.merge(pending);
+    let (offer, pending) = change.apply().unwrap();
+    let mids = negotiate_unique_mids(&mut l, &mut r, offer, pending);
+    assert_eq!(mids, [video.to_string(), audio.to_string()]);
+    assert_ne!(audio, video);
 }
 
 fn with_params(
