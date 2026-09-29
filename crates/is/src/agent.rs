@@ -2506,8 +2506,14 @@ mod test {
 
         for source in [ipv4_4(), ipv4_3()] {
             let username = format!("{}:{}", agent.local_credentials.ufrag, remote_creds.ufrag);
-            let request =
-                StunMessage::binding_request(&username, TransId::new(), true, 0, priority - 1, true);
+            let request = StunMessage::binding_request(
+                &username,
+                TransId::new(),
+                true,
+                0,
+                priority - 1,
+                true,
+            );
             let bytes = serialize_stun_msg(request, &agent.local_credentials.pass);
             assert!(agent.handle_packet(
                 Instant::now(),
