@@ -3,7 +3,6 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::slice::Iter;
-use std::sync::Arc;
 
 use crate::Rtc;
 use crate::RtcError;
@@ -250,20 +249,6 @@ impl<'a> SdpApi<'a> {
         !self.changes.0.is_empty()
     }
 
-    fn new_mid(&mut self) -> Mid {
-        loop {
-            let mid = self.rtc.new_mid();
-            let pending = self.changes.iter().any(|change| match change {
-                Change::AddMedia(media) => media.mid == mid,
-                Change::AddApp(app) => *app == mid,
-                _ => false,
-            });
-            if !pending {
-                return mid;
-            }
-        }
-    }
-
     /// Add audio or video media and get the `mid` that will be used.
     ///
     /// Each call will result in a new m-line in the offer identified by the [`Mid`].
@@ -294,7 +279,7 @@ impl<'a> SdpApi<'a> {
         track_id: Option<String>,
         simulcast: Option<crate::media::Simulcast>,
     ) -> Mid {
-        let mid = self.new_mid();
+        let mid = self.rtc.new_mid();
 
         // https://www.rfc-editor.org/rfc/rfc8830
         // msid-id = 1*64token-char
@@ -458,7 +443,7 @@ impl<'a> SdpApi<'a> {
         let changes_contains_add_app = self.changes.contains_add_app();
 
         if !has_media && !changes_contains_add_app {
-            let mid = self.new_mid();
+            let mid = self.rtc.new_mid();
             self.changes.0.push(Change::AddApp(mid));
         }
 
@@ -525,28 +510,9 @@ impl<'a> SdpApi<'a> {
 
         if requires_negotiation {
             let offer = create_offer(self.rtc, &self.changes);
-            let mids: Vec<_> = self
-                .changes
-                .iter()
-                .filter_map(|change| match change {
-                    Change::AddMedia(media) => Some(media.mid),
-                    Change::AddApp(mid) => Some(*mid),
-                    _ => None,
-                })
-                .collect();
-            // A merge can replace an offer without allocating another MID.
-            self.rtc.pending_mids.retain(|mids| mids.strong_count() > 0);
-            let mid_reservation = if mids.is_empty() {
-                None
-            } else {
-                let mids: Arc<[Mid]> = mids.into();
-                self.rtc.pending_mids.push(Arc::downgrade(&mids));
-                Some(mids)
-            };
             let pending = SdpPendingOffer {
                 change_id,
                 changes: self.changes,
-                _mid_reservation: mid_reservation,
             };
             debug!("Create offer");
             Some((offer, pending))
@@ -621,8 +587,6 @@ impl<'a> SdpApi<'a> {
 pub struct SdpPendingOffer {
     change_id: usize,
     changes: Changes,
-    // Keep these MIDs reserved until the offer is accepted, merged or dropped.
-    _mid_reservation: Option<Arc<[Mid]>>,
 }
 
 impl SdpPendingOffer {
@@ -2103,86 +2067,6 @@ mod test {
             1,
             "AddMedia(audio) should have contiguous index 1, not 2"
         );
-    }
-
-    #[test]
-    fn pending_offer_drop_releases_mids() {
-        crate::init_crypto_default();
-
-        let mut rtc = Rtc::new(Instant::now());
-        fastrand::seed(42);
-        let expected = Mid::new();
-        fastrand::seed(42);
-        let mut changes = rtc.sdp_api();
-        let audio = changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        assert_eq!(audio, expected);
-        assert_eq!(audio.to_string().len(), 3);
-        changes.add_channel("control".into());
-        let (offer, pending) = changes.apply().unwrap();
-        let mids: Vec<_> = offer.media_lines.iter().map(MediaLine::mid).collect();
-        assert_eq!(rtc.pending_mids.len(), 1);
-        assert_eq!(&*rtc.pending_mids[0].upgrade().unwrap(), mids);
-        assert_eq!(rtc.pending_mids[0].strong_count(), 1);
-
-        {
-            let mut changes = rtc.sdp_api();
-            fastrand::seed(42);
-            let video = changes.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
-            assert!(!mids.contains(&video));
-        }
-
-        drop(pending);
-        assert!(rtc.pending_mids[0].upgrade().is_none());
-        let mut changes = rtc.sdp_api();
-        fastrand::seed(42);
-        let reused = changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        assert_eq!(reused, audio);
-        assert!(changes.rtc.pending_mids.is_empty());
-    }
-
-    #[test]
-    fn merging_pending_offer_replaces_mid_reservation() {
-        crate::init_crypto_default();
-
-        let now = Instant::now();
-        let mut rtc = Rtc::new(now);
-        let mut peer = Rtc::new(now);
-        let mut changes = rtc.sdp_api();
-        changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-        changes.add_channel("control".into());
-        let (mut offer, mut pending) = changes.apply().unwrap();
-        let mids: Vec<_> = offer.media_lines.iter().map(MediaLine::mid).collect();
-
-        for _ in 0..10 {
-            let previous = rtc.pending_mids[0].clone();
-            let mut changes = rtc.sdp_api();
-            changes.merge(pending);
-            assert!(previous.upgrade().is_none());
-            (offer, pending) = changes.apply().unwrap();
-            assert_eq!(rtc.pending_mids.len(), 1);
-            assert_eq!(rtc.pending_mids[0].strong_count(), 1);
-            assert_eq!(&*rtc.pending_mids[0].upgrade().unwrap(), mids);
-            assert_eq!(
-                offer
-                    .media_lines
-                    .iter()
-                    .map(MediaLine::mid)
-                    .collect::<Vec<_>>(),
-                mids
-            );
-        }
-
-        let answer = peer.sdp_api().accept_offer(offer).unwrap();
-        rtc.sdp_api().accept_answer(pending, answer).unwrap();
-        assert!(rtc.pending_mids[0].upgrade().is_none());
-
-        let mut changes = rtc.sdp_api();
-        changes.ice_restart(true);
-        let (offer, pending) = changes.apply().unwrap();
-        assert!(pending._mid_reservation.is_none());
-        assert!(rtc.pending_mids.is_empty());
-        let answer = peer.sdp_api().accept_offer(offer).unwrap();
-        rtc.sdp_api().accept_answer(pending, answer).unwrap();
     }
 
     // AddMedia/AddApp entries from a pending offer carry already-allocated MIDs whose

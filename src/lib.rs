@@ -680,7 +680,7 @@ use change::{DirectApi, SdpApi};
 use rtp::RawPacket;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Instant;
 use str0m_proto::Pii;
 use streams::RtpPacket;
@@ -919,7 +919,7 @@ pub struct Rtc {
     last_now: Instant,
     peer_bytes_rx: u64,
     peer_bytes_tx: u64,
-    pending_mids: Vec<Weak<[Mid]>>,
+    mid_counter: u64,
     change_counter: usize,
     last_timeout_reason: Reason,
     crypto_provider: Arc<crate::crypto::CryptoProvider>,
@@ -1288,7 +1288,7 @@ impl Rtc {
             last_now: start,
             peer_bytes_rx: 0,
             peer_bytes_tx: 0,
-            pending_mids: Vec::new(),
+            mid_counter: Mid::random_counter_start(),
             change_counter: 0,
             last_timeout_reason: Reason::NotHappening,
             crypto_provider,
@@ -1528,18 +1528,10 @@ impl Rtc {
 
     /// Creates a new MID, including across pending offers.
     pub(crate) fn new_mid(&mut self) -> Mid {
-        self.pending_mids.retain(|mids| mids.strong_count() > 0);
         loop {
-            let mid = Mid::new();
-            let pending = self
-                .pending_mids
-                .iter()
-                .filter_map(Weak::upgrade)
-                .any(|mids| mids.contains(&mid));
-            if !pending
-                && !self.session.has_mid(mid)
-                && self.session.app().is_none_or(|(app, _)| app != mid)
-            {
+            let mid = Mid::from_counter(self.mid_counter);
+            self.mid_counter = self.mid_counter.wrapping_add(1);
+            if !self.session.has_mid(mid) && self.session.app().is_none_or(|(app, _)| app != mid) {
                 break mid;
             }
         }
