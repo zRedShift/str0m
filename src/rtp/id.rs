@@ -129,26 +129,12 @@ pub struct Mid([u8; 16]);
 str_id!(Mid, "Mid", 16, 3);
 
 impl Mid {
-    const BASE62: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
     pub(crate) fn random_counter_start() -> u64 {
-        NonCryptographicRng::u64() % (Self::BASE62.len() as u64).pow(Self::RANDOM_LEN as u32)
+        Id::<{ Self::RANDOM_LEN }>::random_counter_start()
     }
 
-    pub(crate) fn from_counter(mut value: u64) -> Self {
-        let mut mid = Self::from_array(Default::default());
-        mid.0.fill(b' ');
-        let mut len = 0;
-        loop {
-            mid.0[len] = Self::BASE62[(value % Self::BASE62.len() as u64) as usize];
-            len += 1;
-            value /= Self::BASE62.len() as u64;
-            if value == 0 {
-                break;
-            }
-        }
-        mid.0[..len].reverse();
-        mid
+    pub(crate) fn next(counter: &mut u64) -> Self {
+        Self::from_array(Id::next(counter).into_array())
     }
 }
 
@@ -404,24 +390,13 @@ mod test {
     use super::*;
 
     #[test]
-    fn mid_counter_encoding() {
-        for (value, expected) in [
-            (0, "0"),
-            (9, "9"),
-            (10, "a"),
-            (35, "z"),
-            (36, "A"),
-            (61, "Z"),
-            (62, "10"),
-            (62_u64.pow(3) - 1, "ZZZ"),
-            (62_u64.pow(3), "1000"),
-            (u64::MAX, "lYGhA16ahyf"),
-        ] {
-            let mid = Mid::from_counter(value);
-            assert_eq!(&*mid, expected);
-            assert_eq!(&mid.0[..expected.len()], expected.as_bytes());
-            assert!(mid.0[expected.len()..].iter().all(|b| *b == b' '));
-        }
+    fn mid_counter_uses_native_width() {
+        let mut counter = u64::MAX;
+        let mid = Mid::next(&mut counter);
+        assert_eq!(&*mid, "lYGhA16ahyf");
+        assert_eq!(mid.0.len(), 16);
+        assert!(mid.0[mid.len()..].iter().all(|b| *b == b' '));
+        assert_eq!(counter, 0);
     }
 
     #[test]
@@ -432,7 +407,8 @@ mod test {
             fastrand::seed(seed);
             let actual = Mid::random_counter_start();
             assert_eq!(actual, expected);
-            assert!(Mid::from_counter(actual).len() <= Mid::RANDOM_LEN);
+            let mut counter = actual;
+            assert!(Mid::next(&mut counter).len() <= Mid::RANDOM_LEN);
         }
     }
 }
