@@ -4,13 +4,11 @@ use str0m::error::SdpError;
 use str0m::media::{Direction, MediaKind, Mid};
 
 mod common;
-use common::{Peer, TestRtc, init_crypto_default, init_log, negotiate};
+use common::{Peer, TestRtc, init_crypto_default, init_log};
 
-fn repeat_next_mid() -> Mid {
+fn repeat_rng() {
+    // Allocation is now successive after Rtc construction; reseeding cannot reuse an ID.
     fastrand::seed(1);
-    let mid = Mid::new();
-    fastrand::seed(1);
-    mid
 }
 
 fn offer(l: &mut TestRtc, r: &mut TestRtc, do_change: impl FnOnce(&mut SdpApi)) -> Vec<String> {
@@ -44,9 +42,9 @@ pub fn media_and_channel_in_one_offer_get_distinct_mids() {
     let mut r = TestRtc::new(Peer::Right);
 
     let mids = offer(&mut l, &mut r, |change| {
-        let expected = repeat_next_mid();
-        assert_eq!(add_audio(change), expected);
-        repeat_next_mid();
+        repeat_rng();
+        add_audio(change);
+        repeat_rng();
         change.add_channel("data".into());
     });
 
@@ -64,10 +62,9 @@ pub fn two_media_in_one_offer_get_distinct_mids() {
 
     let mut added = vec![];
     let mids = offer(&mut l, &mut r, |change| {
-        let expected = repeat_next_mid();
+        repeat_rng();
         added.push(add_audio(change));
-        assert_eq!(added[0], expected);
-        repeat_next_mid();
+        repeat_rng();
         added.push(add_audio(change));
     });
 
@@ -84,19 +81,21 @@ pub fn media_offered_after_channel_avoids_its_mid() {
     let mut l = TestRtc::new(Peer::Left);
     let mut r = TestRtc::new(Peer::Right);
 
-    let channel_mid = repeat_next_mid();
-    negotiate(&mut l, &mut r, |change| {
+    repeat_rng();
+    let channel_mids = offer(&mut l, &mut r, |change| {
         change.add_channel("data".into());
     });
+    assert_eq!(channel_mids.len(), 1);
+    let channel_mid = &channel_mids[0];
 
     let mut audio = None;
     let mids = offer(&mut l, &mut r, |change| {
-        repeat_next_mid();
+        repeat_rng();
         audio = Some(add_audio(change));
     });
 
     let audio = audio.unwrap();
-    assert_ne!(audio, channel_mid);
+    assert_ne!(audio.to_string(), *channel_mid);
     assert_eq!(mids, [channel_mid.to_string(), audio.to_string()]);
     assert!(r.rtc.media(audio).is_some());
 }
