@@ -10,10 +10,12 @@ use str0m_proto::NonCryptographicRng;
 macro_rules! str_id {
     ($id:ident, $name:literal, $num:tt, $new_len:tt) => {
         impl $id {
+            const RANDOM_LEN: usize = $new_len;
+
             /// Creates a new random id.
             pub fn new() -> $id {
                 let mut arr = Id::<$num>::random().into_array();
-                for i in $new_len..$num {
+                for i in Self::RANDOM_LEN..$num {
                     arr[i] = b' ';
                 }
                 $id(arr)
@@ -125,6 +127,16 @@ macro_rules! num_id {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Mid([u8; 16]);
 str_id!(Mid, "Mid", 16, 3);
+
+impl Mid {
+    pub(crate) fn random_counter_start() -> u64 {
+        Id::<{ Self::RANDOM_LEN }>::random_counter_start()
+    }
+
+    pub(crate) fn next(counter: &mut u64) -> Self {
+        Self::from_array(Id::next(counter).into_array())
+    }
+}
 
 /// Identifier of a simulcast layer for an encoded stream.
 ///
@@ -370,5 +382,33 @@ impl MidRid {
 
     pub fn special_equals(&self, other: &MidRid) -> bool {
         self.0 == other.0 && (self.1.is_none() || self.1 == other.1)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn mid_counter_uses_native_width() {
+        let mut counter = u64::MAX;
+        let mid = Mid::next(&mut counter);
+        assert_eq!(&*mid, "lYGhA16ahyf");
+        assert_eq!(mid.0.len(), 16);
+        assert!(mid.0[mid.len()..].iter().all(|b| *b == b' '));
+        assert_eq!(counter, 0);
+    }
+
+    #[test]
+    fn mid_counter_start_preserves_seeded_range() {
+        for seed in [0, 1, 42, 43, u64::MAX] {
+            fastrand::seed(seed);
+            let expected = NonCryptographicRng::u64() % 62_u64.pow(3);
+            fastrand::seed(seed);
+            let actual = Mid::random_counter_start();
+            assert_eq!(actual, expected);
+            let mut counter = actual;
+            assert!(Mid::next(&mut counter).len() <= Mid::RANDOM_LEN);
+        }
     }
 }

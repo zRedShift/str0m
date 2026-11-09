@@ -47,7 +47,7 @@ impl<'a> SdpApi<'a> {
         }
     }
 
-    fn new_mid(&self) -> Mid {
+    fn new_mid(&mut self) -> Mid {
         loop {
             let mid = self.rtc.new_mid();
             if !self.changes.has_mid(mid) {

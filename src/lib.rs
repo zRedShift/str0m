@@ -930,6 +930,7 @@ pub struct Rtc {
     last_now: Instant,
     peer_bytes_rx: u64,
     peer_bytes_tx: u64,
+    mid_counter: u64,
     change_counter: usize,
     last_timeout_reason: Reason,
     crypto_provider: Arc<crate::crypto::CryptoProvider>,
@@ -1308,6 +1309,7 @@ impl Rtc {
             last_now: start,
             peer_bytes_rx: 0,
             peer_bytes_tx: 0,
+            mid_counter: Mid::random_counter_start(),
             change_counter: 0,
             last_timeout_reason: Reason::NotHappening,
             crypto_provider,
@@ -1557,11 +1559,11 @@ impl Rtc {
         Ok(())
     }
 
-    /// Creates a new Mid that is not in the session already.
-    pub(crate) fn new_mid(&self) -> Mid {
+    /// Creates a new MID, including across pending offers.
+    pub(crate) fn new_mid(&mut self) -> Mid {
         loop {
-            let mid = Mid::new();
-            if !self.session.has_mid(mid) {
+            let mid = Mid::next(&mut self.mid_counter);
+            if !self.session.has_mid(mid) && self.session.app().is_none_or(|(app, _)| app != mid) {
                 break mid;
             }
         }
